@@ -1,0 +1,2 @@
+[functions.cert-api]
+verify_jwt = false
