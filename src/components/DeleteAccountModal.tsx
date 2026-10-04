@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Trash2, AlertTriangle, X, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '@/lib/auth';
-import { api } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { analytics } from '@/lib/analytics';
 
 export const DeleteAccountModal: React.FC = () => {

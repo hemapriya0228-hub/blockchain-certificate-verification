@@ -33,11 +33,17 @@ export default function Login() {
         case 'admin':
           navigate('/admin/dashboard');
           break;
+        case 'institution':
+          navigate('/institution/dashboard');
+          break;
         case 'teacher':
           navigate('/teacher/dashboard');
           break;
         case 'student':
           navigate('/student/dashboard');
+          break;
+        case 'employer':
+          navigate('/employer/dashboard');
           break;
         default:
           navigate('/verify');

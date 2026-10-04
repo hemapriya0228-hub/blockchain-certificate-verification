@@ -39,6 +39,15 @@ export const DemoUserBar: React.FC = () => {
       icon: GraduationCap,
       color: 'text-emerald-400',
     },
+    {
+      role: 'employer' as const,
+      label: 'Employer (Global HR)',
+      email: 'testemployer@chaincert.io',
+      fullName: 'Global Talent HR Services',
+      target: '/employer/dashboard',
+      icon: Users,
+      color: 'text-purple-400',
+    },
   ];
 
   const handleSwitch = (account: typeof demoAccounts[0]) => {

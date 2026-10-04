@@ -1,26 +1,31 @@
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from '@/lib/auth';
 import { analytics } from '@/lib/analytics';
 import Layout from '@/components/Layout';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import Landing from '@/pages/Landing';
-import Issue from '@/pages/Issue';
-import Verify from '@/pages/Verify';
-import Ledger from '@/pages/Ledger';
 import Login from '@/pages/Login';
 import Register from '@/pages/Register';
-import AdminDashboard from '@/pages/AdminDashboard';
-import TeacherDashboard from '@/pages/TeacherDashboard';
-import StudentDashboard from '@/pages/StudentDashboard';
+import Verify from '@/pages/Verify';
 import NotFound from '@/pages/NotFound';
 import AccessDenied from '@/pages/AccessDenied';
-import PrivacyPolicy from '@/pages/PrivacyPolicy';
-import TermsOfService from '@/pages/TermsOfService';
-import Support from '@/pages/Support';
-import StatusPage from '@/pages/StatusPage';
-import StoreShowcase from '@/pages/StoreShowcase';
+import { FullPageSpinner } from '@/components/Spinner';
+
+// Lazy-loaded routes for optimal initial bundle size
+const AdminDashboard = lazy(() => import('@/pages/AdminDashboard'));
+const TeacherDashboard = lazy(() => import('@/pages/TeacherDashboard'));
+const StudentDashboard = lazy(() => import('@/pages/StudentDashboard'));
+const EmployerDashboard = lazy(() => import('@/pages/EmployerDashboard'));
+const Ledger = lazy(() => import('@/pages/Ledger'));
+const StatusPage = lazy(() => import('@/pages/StatusPage'));
+const StoreShowcase = lazy(() => import('@/pages/StoreShowcase'));
+const PrivacyPolicy = lazy(() => import('@/pages/PrivacyPolicy'));
+const TermsOfService = lazy(() => import('@/pages/TermsOfService'));
+const Support = lazy(() => import('@/pages/Support'));
+const Issue = lazy(() => import('@/pages/Issue'));
+const InstitutionRegister = lazy(() => import('@/pages/InstitutionRegister'));
 
 // Global floating & compliance components
 import { OfflineBanner } from '@/components/OfflineBanner';
@@ -71,61 +76,81 @@ function App() {
         />
 
         <Layout>
-          <Routes>
-            {/* Public routes */}
-            <Route path="/" element={<Landing />} />
-            <Route path="/verify" element={<Verify />} />
-            <Route path="/ledger" element={<Ledger />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/register" element={<Register />} />
-            <Route path="/support" element={<Support />} />
-            <Route path="/status" element={<StatusPage />} />
-            <Route path="/privacy-policy" element={<PrivacyPolicy />} />
-            <Route path="/terms" element={<TermsOfService />} />
-            <Route path="/store-showcase" element={<StoreShowcase />} />
+          <Suspense fallback={<FullPageSpinner />}>
+            <Routes>
+              {/* Public routes */}
+              <Route path="/" element={<Landing />} />
+              <Route path="/verify" element={<Verify />} />
+              <Route path="/ledger" element={<Ledger />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/institution/login" element={<Login />} />
+              <Route path="/register" element={<Register />} />
+              <Route path="/institution/register" element={<InstitutionRegister />} />
+              <Route path="/support" element={<Support />} />
+              <Route path="/status" element={<StatusPage />} />
+              <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+              <Route path="/terms" element={<TermsOfService />} />
+              <Route path="/store-showcase" element={<StoreShowcase />} />
 
-            {/* Protected routes */}
-            <Route
-              path="/issue"
-              element={
-                <ProtectedRoute roles={['admin']}>
-                  <Issue />
-                </ProtectedRoute>
-              }
-            />
+              {/* Protected routes */}
+              <Route
+                path="/issue"
+                element={
+                  <ProtectedRoute roles={['admin']}>
+                    <Issue />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* Role-specific dashboards */}
-            <Route
-              path="/admin/dashboard"
-              element={
-                <ProtectedRoute roles={['admin']}>
-                  <AdminDashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/teacher/dashboard"
-              element={
-                <ProtectedRoute roles={['teacher']}>
-                  <TeacherDashboard />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/student/dashboard"
-              element={
-                <ProtectedRoute roles={['student']}>
-                  <StudentDashboard />
-                </ProtectedRoute>
-              }
-            />
+              {/* Role-specific dashboards */}
+              <Route
+                path="/admin/dashboard"
+                element={
+                  <ProtectedRoute roles={['admin']}>
+                    <AdminDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/teacher/dashboard"
+                element={
+                  <ProtectedRoute roles={['teacher', 'institution']}>
+                    <TeacherDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/institution/dashboard"
+                element={
+                  <ProtectedRoute roles={['institution', 'teacher']}>
+                    <TeacherDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/student/dashboard"
+                element={
+                  <ProtectedRoute roles={['student']}>
+                    <StudentDashboard />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/employer/dashboard"
+                element={
+                  <ProtectedRoute roles={['employer']}>
+                    <EmployerDashboard />
+                  </ProtectedRoute>
+                }
+              />
 
-            {/* Access control & status routes */}
-            <Route path="/access-denied" element={<AccessDenied />} />
+              {/* Access control & status routes */}
+              <Route path="/access-denied" element={<AccessDenied />} />
 
-            {/* 404 Fallback route */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
+              {/* 404 Fallback route */}
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </Suspense>
         </Layout>
       </BrowserRouter>
     </AuthProvider>

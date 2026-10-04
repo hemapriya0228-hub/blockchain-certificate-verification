@@ -3,15 +3,16 @@ import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { Mail, Lock, User, ArrowRight, ShieldCheck, GraduationCap, Briefcase, Building2, Clock, Info } from 'lucide-react';
-import { api } from '@/lib/supabase';
+import { api } from '@/lib/api';
 import { ButtonSpinner } from '@/components/Spinner';
 
-type RoleChoice = 'admin' | 'teacher' | 'student';
+type RoleChoice = 'admin' | 'teacher' | 'student' | 'employer';
 
 const roleConfig: Record<RoleChoice, { icon: typeof ShieldCheck; label: string; desc: string }> = {
-  admin: { icon: Building2, label: 'Admin', desc: 'Approve users & certificates' },
-  teacher: { icon: Briefcase, label: 'Teacher', desc: 'Create certificate drafts' },
-  student: { icon: GraduationCap, label: 'Student', desc: 'View your certificates' },
+  student: { icon: GraduationCap, label: 'Student', desc: 'Instant student account' },
+  teacher: { icon: Briefcase, label: 'Teacher', desc: 'Instant teacher account' },
+  employer: { icon: Building2, label: 'Employer', desc: 'Instant employer portal' },
+  admin: { icon: ShieldCheck, label: 'Admin', desc: 'Request admin access' },
 };
 
 export default function Register() {
@@ -20,7 +21,7 @@ export default function Register() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [role, setRole] = useState<RoleChoice>('teacher');
+  const [role, setRole] = useState<RoleChoice>('student');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -60,14 +61,14 @@ export default function Register() {
         role,
       });
 
-      if (res.requiresApproval || role !== 'admin') {
-        toast.success('Registration submitted! An admin must approve your account before you can log in.');
+      if (res.requiresApproval || role === 'admin') {
+        toast.success('Administrator access requested. An existing admin must approve your account before you can log in.');
       } else {
-        toast.success('Account created! Please sign in.');
+        toast.success('Account created successfully! You can sign in now.');
       }
       navigate('/login');
     } catch (err: any) {
-      toast.error(err.message || 'Registration failed');
+      toast.error(err.message || 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -89,7 +90,7 @@ export default function Register() {
             </Link>
             <h1 className="font-display text-2xl font-bold text-white mb-2">Create an Account</h1>
             <p className="text-slate-400 text-sm">
-              Select your role. Teacher and Student accounts require Admin approval before login.
+              Select your role. Student, Teacher, and Employer accounts are activated immediately upon registration. Admin requests require administrator review.
             </p>
           </div>
 
@@ -125,9 +126,9 @@ export default function Register() {
               <Info className="w-4 h-4 text-gold-400 shrink-0 mt-0.5" />
               <p className="text-xs text-slate-300 leading-relaxed">
                 {role === 'admin' ? (
-                  <>Administrator registrations require review and authorization by the primary system administrator before access is granted.</>
+                  <>Administrator registrations require review and authorization by an existing system administrator before access is granted.</>
                 ) : (
-                  <><strong>{role === 'teacher' ? 'Teacher' : 'Student'}</strong> accounts must wait for Admin approval before login works. Your account will appear in the Admin Dashboard for approval.</>
+                  <>Your <strong>{role.charAt(0).toUpperCase() + role.slice(1)}</strong> account is activated immediately upon creation. You can log in right away.</>
                 )}
               </p>
             </div>

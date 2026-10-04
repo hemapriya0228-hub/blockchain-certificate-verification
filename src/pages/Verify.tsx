@@ -10,7 +10,7 @@ import {
   IdCard,
   X,
 } from 'lucide-react';
-import { api, type VerifyResponse } from '@/lib/supabase';
+import { api, type VerifyResponse } from '@/lib/api';
 import { fileToBase64, formatFileSize, validateCertificateFile } from '@/lib/utils';
 import { ButtonSpinner } from '@/components/Spinner';
 import ResultCard from '@/components/ResultCard';

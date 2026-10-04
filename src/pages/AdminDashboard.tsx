@@ -27,13 +27,14 @@ import {
   Trash2,
   Ban,
 } from 'lucide-react';
-import { api, type UserProfile, type CertificateDraft, type StatsResponse, type Certificate, type BlockData } from '@/lib/supabase';
+import { api, type UserProfile, type CertificateDraft, type StatsResponse, type Certificate, type BlockData } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { formatDate, formatDateTime, formatFileSize } from '@/lib/utils';
 import HashDisplay from '@/components/HashDisplay';
 import StatusBadge from '@/components/StatusBadge';
 import { FullPageSpinner, ButtonSpinner } from '@/components/Spinner';
 import { EmptyState } from '@/components/EmptyState';
+import { useRealtimeEvents } from '@/lib/events';
 
 export default function AdminDashboard() {
   const { user } = useAuth();
@@ -67,6 +68,17 @@ export default function AdminDashboard() {
       setLoading(false);
     }
   }, []);
+
+  const handleRealtimeEvent = useCallback((evt: any) => {
+    if (['certificate.submitted', 'certificate.approved', 'certificate.rejected', 'certificate.revoked', 'user.approved', 'user.rejected'].includes(evt.type)) {
+      if (evt.type === 'certificate.submitted') {
+        toast.success(`Real-Time Alert: New certificate draft submitted by faculty.`);
+      }
+      fetchData();
+    }
+  }, [fetchData]);
+
+  useRealtimeEvents(handleRealtimeEvent);
 
   useEffect(() => {
     fetchData();

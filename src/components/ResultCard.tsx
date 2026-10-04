@@ -1,11 +1,11 @@
 import { type ReactNode } from 'react';
-import { type Certificate } from '@/lib/supabase';
+import { type Certificate } from '@/lib/api';
 import { formatDate, formatFileSize } from '@/lib/utils';
 import HashDisplay from './HashDisplay';
 import { ShieldCheck, AlertTriangle, FileText, Building2, GraduationCap, Calendar, Hash, Box } from 'lucide-react';
 
 interface ResultCardProps {
-  result: 'valid' | 'invalid' | 'tampered' | 'not_found';
+  result: 'valid' | 'invalid' | 'tampered' | 'not_found' | 'revoked';
   certificate?: Certificate | null;
   block?: any | null;
   computedHash?: string | null;
@@ -52,6 +52,15 @@ const config = {
     iconColor: 'text-slate-400',
     title: 'Certificate Not Found',
     subtitle: 'No certificate exists with the provided ID. Please check and try again.',
+  },
+  revoked: {
+    bg: 'from-amber-500/10 to-orange-500/5',
+    border: 'border-amber-500/30',
+    glow: 'glow-gold',
+    icon: AlertTriangle,
+    iconColor: 'text-amber-400',
+    title: 'Certificate Revoked',
+    subtitle: 'This certificate was previously issued but has been revoked by the issuing institution.',
   },
 };
 

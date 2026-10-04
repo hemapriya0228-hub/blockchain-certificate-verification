@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
-import type { UserRole } from '@/lib/supabase';
+import type { UserRole } from '@/lib/api';
 import { ShieldAlert, LogOut, LayoutDashboard, Home, ArrowLeft } from 'lucide-react';
 
 interface AccessDeniedProps {

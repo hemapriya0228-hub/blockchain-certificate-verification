@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, CheckCircle, AlertTriangle, Radio } from 'lucide-react';
-import { api } from '@/lib/supabase';
+import { api } from '@/lib/api';
 
 export const SystemMonitor: React.FC = () => {
   const [latency, setLatency] = useState<number | null>(null);

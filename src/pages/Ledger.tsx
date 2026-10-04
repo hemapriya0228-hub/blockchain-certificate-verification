@@ -18,7 +18,7 @@ import {
   FileText,
   GraduationCap,
 } from 'lucide-react';
-import { api, type CertListResponse, type CertDetailResponse } from '@/lib/supabase';
+import { api, type CertListResponse, type CertDetailResponse } from '@/lib/api';
 import { FullPageSpinner } from '@/components/Spinner';
 import HashDisplay from '@/components/HashDisplay';
 import StatusBadge from '@/components/StatusBadge';
@@ -315,7 +315,8 @@ export default function Ledger() {
 // --- Block detail view (etherscan-style) ---
 function BlockDetailView({ detail, onBack }: { detail: CertDetailResponse; onBack: () => void }) {
   const cert = detail.certificate;
-  const block = detail.blocks[0];
+  const block = detail.block || (detail.blocks && detail.blocks[0]) || null;
+  const logs = detail.verificationLogs || [];
 
   return (
     <div className="mt-2 rounded-xl bg-navy-850/80 border border-gold-500/15 p-6 space-y-6">
@@ -366,14 +367,14 @@ function BlockDetailView({ detail, onBack }: { detail: CertDetailResponse; onBac
       )}
 
       {/* Verification logs */}
-      {detail.verificationLogs.length > 0 && (
+      {logs.length > 0 && (
         <div className="pt-4 border-t border-gold-500/10">
           <h4 className="text-white font-display font-semibold text-sm mb-4 flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-gold-500" />
-            Verification History ({detail.verificationLogs.length})
+            Verification History ({logs.length})
           </h4>
           <div className="space-y-2">
-            {detail.verificationLogs.map((log) => (
+            {logs.map((log: any) => (
               <div key={log.id} className="flex items-center justify-between text-xs py-2 px-3 rounded-lg bg-navy-800/40">
                 <span className="text-slate-400">{formatDateTime(log.created_at)}</span>
                 <span

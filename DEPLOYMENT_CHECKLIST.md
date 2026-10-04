@@ -1,41 +1,39 @@
 # Production Deployment Checklist — ChainCert System
 
-Follow this checklist prior to public launch on Vercel/Netlify (frontend) and Supabase (backend/database).
+Follow this checklist prior to public launch on Vercel/Netlify (Frontend) and Render/Railway/MongoDB Atlas (Backend & Database).
 
 ---
 
-## 1. Supabase Project Setup (Backend / Database)
+## 1. MongoDB Atlas Setup (Database)
 
-- [ ] **Run Database Migrations**:
-  Execute migrations in `supabase/migrations/` in order:
-  1. `20260907124227_create_certificate_verification_system.sql`
-  2. `20260907130255_add_rbac_users_and_drafts.sql`
-  3. `20260907150000_production_security_hardening.sql` (Strict RLS enforcement)
-
-- [ ] **Deploy Edge Function (`cert-api`)**:
-  ```bash
-  supabase functions deploy cert-api --project-ref <your-project-id>
-  ```
-
-- [ ] **Configure Edge Function Secrets**:
-  Ensure the following environment secrets are set in Supabase Dashboard -> Edge Functions -> Secrets:
-  - `SUPABASE_URL`: `https://<your-project-id>.supabase.co`
-  - `SUPABASE_ANON_KEY`: `<your-anon-key>`
-  - `SUPABASE_SERVICE_ROLE_KEY`: `<your-service-role-key>` (Used securely server-side only)
-  - `ALLOWED_ORIGIN`: `https://your-production-domain.com`
-
-- [ ] **Verify Authentication Configuration**:
-  - In Supabase Dashboard -> Authentication -> URL Configuration:
-    - Set **Site URL** to `https://your-production-domain.com`.
-    - Add Redirect URLs: `https://your-production-domain.com/**`.
-  - Rate limiting: Under Auth Settings, ensure default brute force rate limits are enabled.
-
-- [ ] **Seed / Confirm Production Admin**:
-  Ensure the designated admin account is active in `users` and `auth.users` with `status: 'approved'`.
+- [ ] **Create MongoDB Atlas Cluster**:
+  - Deploy a MongoDB Atlas Cluster (M0 Free Tier or higher).
+  - Create database named `chaincert`.
+- [ ] **Database Network Access & User**:
+  - Add IP Access List entry (allow `0.0.0.0/0` for serverless/PaaS or specify Render IP ranges).
+  - Create database user with ReadWrite permissions to `chaincert`.
+- [ ] **Connection String**:
+  - Copy URI format: `mongodb+srv://<username>:<password>@cluster.mongodb.net/chaincert?retryWrites=true&w=majority`.
 
 ---
 
-## 2. Frontend Hosting Setup (Vercel / Netlify)
+## 2. Backend Hosting Setup (Render / Railway / Heroku)
+
+- [ ] **Build & Runtime Settings**:
+  - **Runtime**: Node.js 20.x or higher
+  - **Build Command**: `npm install`
+  - **Start Command**: `npm start` (Runs `node server.js`)
+- [ ] **Environment Variables**:
+  Add in host dashboard:
+  - `PORT`: `5000` (or host assigned port)
+  - `MONGODB_URI`: `<your-mongodb-atlas-connection-string>`
+  - `MONGODB_DATABASE`: `chaincert`
+  - `JWT_SECRET`: `<secure-random-secret-key>`
+  - `ALLOWED_ORIGIN`: `https://your-frontend-domain.vercel.app`
+
+---
+
+## 3. Frontend Hosting Setup (Vercel / Netlify)
 
 - [ ] **Build Settings**:
   - **Framework Preset**: Vite
@@ -44,21 +42,16 @@ Follow this checklist prior to public launch on Vercel/Netlify (frontend) and Su
   - **Node Version**: 20.x or higher
 
 - [ ] **Environment Variables**:
-  Add the following in Vercel / Netlify dashboard:
-  - `VITE_SUPABASE_URL`: `https://<your-project-id>.supabase.co`
-  - `VITE_SUPABASE_ANON_KEY`: `<your-public-anon-key>`
+  Add in Vercel / Netlify dashboard:
+  - `VITE_API_URL`: `https://your-backend-api.onrender.com`
+  - `VITE_API_BASE_URL`: `https://your-backend-api.onrender.com`
 
 - [ ] **SPA Route Rewrites**:
-  - For **Vercel**: Handled automatically via `vercel.json` (`/.* -> /index.html`).
-  - For **Netlify**: Handled automatically via `public/_redirects` (`/* /index.html 200`).
-
-- [ ] **Custom Domain & SSL**:
-  - Connect custom domain.
-  - Verify HTTPS certificate is active (automatic on Vercel/Netlify).
+  - Handled automatically via `vercel.json` (`/.* -> /index.html`) or `public/_redirects` (`/* /index.html 200`).
 
 ---
 
-## 3. Post-Deployment Verification Pass
+## 4. Post-Deployment Verification Pass
 
 - [ ] **Public Verification**: Visit `/verify` and test verifying a certificate hash and downloading QR code.
 - [ ] **Public Ledger**: Visit `/ledger` and verify blocks load with cryptographic hashes.

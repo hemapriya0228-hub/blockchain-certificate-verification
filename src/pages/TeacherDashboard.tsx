@@ -21,11 +21,12 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
-import { api, type CertificateDraft } from '@/lib/supabase';
+import { api, type CertificateDraft } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { fileToBase64, formatDate, generateUUID, validateCertificateFile } from '@/lib/utils';
 import { ButtonSpinner, FullPageSpinner } from '@/components/Spinner';
 import { EmptyState } from '@/components/EmptyState';
+import { useRealtimeEvents } from '@/lib/events';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ACCEPTED_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
@@ -55,6 +56,17 @@ export default function TeacherDashboard() {
       setLoading(false);
     }
   }, []);
+
+  const handleRealtimeEvent = useCallback((evt: any) => {
+    if (['certificate.approved', 'certificate.rejected', 'certificate.status.updated'].includes(evt.type)) {
+      if (evt.type === 'certificate.approved') {
+        toast.success('Real-Time Alert: Your certificate draft has been approved by the Administrator!');
+      }
+      fetchDrafts();
+    }
+  }, [fetchDrafts]);
+
+  useRealtimeEvents(handleRealtimeEvent);
 
   useEffect(() => {
     fetchDrafts();
@@ -86,13 +98,17 @@ export default function TeacherDashboard() {
           <div>
             <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-gold-500/10 border border-gold-500/20 mb-4">
               <LayoutDashboard className="w-3.5 h-3.5 text-gold-400" />
-              <span className="text-gold-400 text-xs font-medium tracking-wide">TEACHER DASHBOARD</span>
+              <span className="text-gold-400 text-xs font-medium tracking-wide">
+                {user?.role === 'institution' ? 'INSTITUTION DASHBOARD' : 'TEACHER DASHBOARD'}
+              </span>
             </div>
             <h1 className="font-display text-3xl sm:text-4xl font-bold text-white mb-2">
               Welcome, {user?.fullName}
             </h1>
             <p className="text-slate-400 text-lg">
-              Create certificate drafts and submit them for admin approval.
+              {user?.role === 'institution'
+                ? 'Manage institutional credential drafts, student records, and certificate issuance requests.'
+                : 'Create certificate drafts and submit them for admin approval.'}
             </p>
           </div>
           {!showForm && (

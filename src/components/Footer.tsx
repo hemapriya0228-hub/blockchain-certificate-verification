@@ -18,9 +18,6 @@ export default function Footer() {
               Decentralized academic and professional certificate verification infrastructure.
               Zero personal data is stored on-chain — SHA-256 cryptographic digests ensure instant mathematical authenticity.
             </p>
-            <div className="mt-4">
-              <SystemMonitor />
-            </div>
           </div>
 
           <div>

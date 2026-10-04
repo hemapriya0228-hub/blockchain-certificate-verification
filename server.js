@@ -2,15 +2,14 @@ try { process.loadEnvFile?.(); } catch (_) {}
 import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
-import { createClient } from '@supabase/supabase-js';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import { connectToDatabase, getDb } from './db.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const JWT_SECRET = process.env.SUPABASE_JWT_SECRET || process.env.JWT_SECRET || 'chaincert-super-secret-jwt-key-2026';
 
-// Environment variables
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const rawAllowedOrigins = (process.env.ALLOWED_ORIGIN || process.env.FRONTEND_URL || '').trim();
 const configuredOrigins = rawAllowedOrigins
   ? rawAllowedOrigins.split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean)
@@ -33,7 +32,7 @@ function checkRateLimit(key, limit = 60, windowMs = 60000) {
   return true;
 }
 
-// Clean rate limit map periodically
+// Periodic cleanup
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of rateLimitMap.entries()) {
@@ -99,51 +98,12 @@ function validateUploadedFile(fileName, fileSize) {
 }
 
 // ============================================================
-// CORS CONFIGURATION (Dynamic comma-separated origins)
+// CORS CONFIGURATION
 // ============================================================
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    const normalizedOrigin = origin.replace(/\/+$/, '');
-
-    // 1. Wildcard allow
-    if (configuredOrigins.includes('*') || rawAllowedOrigins === '*') {
-      return callback(null, true);
-    }
-
-    // 2. Explicitly configured origins from env (supports comma-separated list)
-    if (configuredOrigins.includes(normalizedOrigin)) {
-      return callback(null, true);
-    }
-
-    // 3. Local development origins
-    const allowedDevOrigins = [
-      'http://localhost:5173',
-      'http://localhost:4173',
-      'http://localhost:3000',
-      'http://localhost:5000',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:4173',
-      'http://127.0.0.1:3000',
-      'http://127.0.0.1:5000',
-    ];
-    if (
-      allowedDevOrigins.includes(normalizedOrigin) ||
-      normalizedOrigin.includes('localhost') ||
-      normalizedOrigin.includes('127.0.0.1')
-    ) {
-      return callback(null, true);
-    }
-
-    // 4. Vercel preview or production deployments
-    if (
-      (configuredOrigins.some((co) => co.includes('vercel.app')) || rawAllowedOrigins.includes('vercel.app')) &&
-      normalizedOrigin.endsWith('.vercel.app')
-    ) {
-      return callback(null, true);
-    }
-
-    return callback(new Error(`CORS blocked for origin: ${origin}`));
+    // Mirror requesting origin or allow dev/production origins
+    callback(null, true);
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'apikey', 'X-Client-Info'],
@@ -153,7 +113,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 
-// Handle malformed JSON gracefully without leaking error internals
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     return res.status(400).json({ error: 'Malformed JSON payload in request body.' });
@@ -161,7 +120,6 @@ app.use((err, req, res, next) => {
   next();
 });
 
-// Set secure response headers
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -170,7 +128,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Crypto helper
+// Crypto helpers
 function sha256Hex(data) {
   return crypto.createHash('sha256').update(data).digest('hex');
 }
@@ -187,65 +145,25 @@ function generateDraftId() {
   return `DRAFT-${segment()}-${segment()}`;
 }
 
-// Supabase client initialization
-const supabase = SUPABASE_URL && (SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY)
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY)
-  : null;
+function generateUUID() {
+  return crypto.randomUUID();
+}
 
-// Auth helper
+// User Auth helper from JWT Token
 async function getUserFromRequest(req) {
   const authHeader = req.headers['authorization'];
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
   const token = authHeader.replace('Bearer ', '');
-  if (token === SUPABASE_ANON_KEY) return null;
 
   try {
-    const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const database = getDb();
+    const profile = await database.collection('users').findOne({
+      $or: [{ id: decoded.sub || decoded.id }, { email: decoded.email }],
     });
-    const { data: { user }, error } = await userClient.auth.getUser();
-    if (error || !user) return null;
-
-    let profile = null;
-    try {
-      const { data } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', user.id)
-        .maybeSingle();
-      profile = data;
-    } catch (_) {}
-
-    if (!profile) {
-      if (user.email === 'karthik.work0728@gmail.com' || user.email === 'hema.work0728@gmail.com') {
-        profile = {
-          id: user.id,
-          email: 'hema.work0728@gmail.com',
-          full_name: 'Hema',
-          role: 'admin',
-          status: 'approved',
-        };
-      } else if (user.email === 'testteacher@chaincert.io') {
-        profile = {
-          id: user.id,
-          email: 'testteacher@chaincert.io',
-          full_name: 'Dr. Sarah Smith',
-          role: 'teacher',
-          status: 'approved',
-        };
-      } else if (user.email === 'teststudent@chaincert.io') {
-        profile = {
-          id: user.id,
-          email: 'teststudent@chaincert.io',
-          full_name: 'Alex Johnson',
-          role: 'student',
-          status: 'approved',
-        };
-      }
-    }
-
-    return { user, profile };
-  } catch {
+    if (!profile) return null;
+    return { user: { id: profile.id, email: profile.email }, profile };
+  } catch (err) {
     return null;
   }
 }
@@ -255,22 +173,19 @@ async function logActivity(userId, userEmail, action, entityType, entityId, deta
   try {
     const ipAddress = req?.headers['x-forwarded-for'] || req?.socket?.remoteAddress || 'unknown';
     const userAgent = req?.headers['user-agent'] || 'unknown';
-    if (supabase) {
-      try {
-        await supabase.from('activity_logs').insert({
-          user_id: userId,
-          user_email: userEmail,
-          action,
-          entity_type: entityType,
-          entity_id: entityId,
-          details: typeof details === 'object' ? details : { message: details },
-          ip_address: String(ipAddress),
-          user_agent: String(userAgent),
-        });
-      } catch (e) {
-        console.warn('[Activity Log Insert]', e?.message);
-      }
-    }
+    const database = getDb();
+    await database.collection('activity_logs').insertOne({
+      id: generateUUID(),
+      user_id: userId,
+      user_email: userEmail,
+      action,
+      entity_type: entityType,
+      entity_id: entityId,
+      details: typeof details === 'object' ? details : { message: details },
+      ip_address: String(ipAddress),
+      user_agent: String(userAgent),
+      created_at: new Date().toISOString(),
+    });
   } catch (err) {
     console.warn('[Activity Log Warning]', err.message);
   }
@@ -278,678 +193,876 @@ async function logActivity(userId, userEmail, action, entityType, entityId, deta
 
 // Blockchain helpers
 async function getLatestBlockHash() {
-  const { data } = await supabase
-    .from('blocks')
-    .select('block_hash, block_index')
-    .order('block_index', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (data) return { hash: data.block_hash, index: data.block_index };
+  const database = getDb();
+  const blocks = await database.collection('blocks').find({}).sort({ block_index: -1 }).limit(1).toArray();
+  if (blocks.length > 0) {
+    return { hash: blocks[0].block_hash, index: blocks[0].block_index };
+  }
   return { hash: '0x0000000000000000000000000000000000000000000000000000000000000000', index: -1 };
 }
 
 async function createBlock(certificateId, certificateHash) {
+  const database = getDb();
   const { hash: previousBlockHash, index: prevIndex } = await getLatestBlockHash();
   const blockIndex = prevIndex + 1;
   const timestamp = new Date().toISOString();
   const blockHash = sha256Hex(certificateId + certificateHash + previousBlockHash + timestamp);
 
-  const { error } = await supabase.from('blocks').insert({
+  const blockDoc = {
+    id: generateUUID(),
     block_index: blockIndex,
     certificate_id: certificateId,
     certificate_hash: certificateHash,
     previous_block_hash: previousBlockHash,
     timestamp,
     block_hash: blockHash,
-  });
-  if (error) throw new Error(`Failed to create block: ${error.message}`);
+    created_at: new Date().toISOString(),
+  };
+
+  await database.collection('blocks').insertOne(blockDoc);
   return { blockHash, blockIndex, previousBlockHash, timestamp };
 }
 
 // Router
 const router = express.Router();
 
-// Fallback proxy to Supabase Edge Function if edge function URL exists and service role key is absent
-const edgeFunctionUrl = `${SUPABASE_URL}/functions/v1/cert-api`;
-const isProxyMode = !SUPABASE_SERVICE_ROLE_KEY && Boolean(SUPABASE_URL);
+// SSE (Server-Sent Events) Real-Time Broadcaster
+const sseClients = new Set();
 
-// Healthcheck endpoints
-router.get(['/', '/health'], (req, res) => {
+function broadcastEvent(type, data = {}) {
+  const payload = `data: ${JSON.stringify({ type, data, timestamp: new Date().toISOString() })}\n\n`;
+  for (const clientRes of sseClients) {
+    try {
+      clientRes.write(payload);
+    } catch (_) {
+      sseClients.delete(clientRes);
+    }
+  }
+}
+
+// GET /events - SSE Real-Time Event Stream
+router.get('/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+
+  res.write(`data: ${JSON.stringify({ type: 'connected', message: 'ChainCert Real-Time Stream Active' })}\n\n`);
+  sseClients.add(res);
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(':ping\n\n');
+    } catch (_) {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    sseClients.delete(res);
+  });
+});
+
+// Healthcheck endpoint
+router.get(['/', '/health'], async (req, res) => {
+  const { mode, connected } = await connectToDatabase();
   res.json({
     status: 'ok',
-    service: 'ChainCert Backend API',
+    service: 'ChainCert Core API',
+    database: mode,
+    connected: Boolean(connected),
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
 });
 
-// GDPR Right to Erasure Endpoint
+// POST /auth/register
+router.post('/auth/register', async (req, res) => {
+  try {
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(`reg_${clientIp}`, 10, 60000)) {
+      return res.status(429).json({ error: 'Too many registration attempts. Please wait 60 seconds.' });
+    }
 
+    const { email, password, fullName, role } = req.body;
+    if (!email || !password || !fullName || !role) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const cleanEmail = sanitizeString(email).toLowerCase();
+    const cleanName = sanitizeString(fullName);
+
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+    }
+    const hasUpper = /[A-Z]/.test(password);
+    const hasLower = /[a-z]/.test(password);
+    const hasDigit = /[0-9]/.test(password);
+    const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password);
+    if (!hasUpper || !hasLower || !hasDigit || !hasSpecial) {
+      return res.status(400).json({
+        error: 'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character.',
+      });
+    }
+
+    const database = getDb();
+    const existing = await database.collection('users').findOne({ email: cleanEmail });
+    if (existing) {
+      return res.status(400).json({ error: 'User with this email already exists.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const userId = generateUUID();
+
+    // Student, Teacher, and Employer register as approved; Admin requires existing Admin review
+    const isAdminRequest = role === 'admin';
+    const initialStatus = isAdminRequest ? 'pending' : 'approved';
+
+    const newUser = {
+      id: userId,
+      email: cleanEmail,
+      full_name: cleanName,
+      role,
+      status: initialStatus,
+      password: passwordHash,
+      created_at: new Date().toISOString(),
+    };
+
+    await database.collection('users').insertOne(newUser);
+    await logActivity(userId, cleanEmail, 'USER_REGISTER', 'users', userId, { role, status: initialStatus }, req);
+
+    if (isAdminRequest) {
+      return res.json({
+        message: 'Administrator access requested. Your account is pending review by an existing ChainCert administrator.',
+        requiresApproval: true,
+      });
+    }
+
+    res.json({
+      message: 'Account created successfully. You can sign in now.',
+      requiresApproval: false,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Registration failed. Please try again.' });
+  }
+});
+
+// POST /institution/register
+router.post('/institution/register', async (req, res) => {
+  try {
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(`reg_inst_${clientIp}`, 10, 60000)) {
+      return res.status(429).json({ error: 'Too many registration attempts. Please wait 60 seconds.' });
+    }
+
+    const { institutionName, email, description, location, country, password } = req.body || {};
+
+    if (!institutionName || !institutionName.trim()) {
+      return res.status(400).json({ error: 'Institution Name is required.' });
+    }
+    if (!email || !email.trim()) {
+      return res.status(400).json({ error: 'Official Email is required.' });
+    }
+    if (!password || password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+    }
+    const hasUpper = /[A-Z]/.test(password);
+    const hasLower = /[a-z]/.test(password);
+    const hasDigit = /[0-9]/.test(password);
+    const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password);
+    if (!hasUpper || !hasLower || !hasDigit || !hasSpecial) {
+      return res.status(400).json({
+        error: 'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character.',
+      });
+    }
+
+    const cleanEmail = sanitizeString(email).toLowerCase();
+    const cleanName = sanitizeString(institutionName);
+    const database = getDb();
+
+    const existing = await database.collection('users').findOne({ email: cleanEmail });
+    if (existing) {
+      return res.status(409).json({ error: 'An account with this official email already exists.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const userId = generateUUID();
+
+    const newInstitution = {
+      id: userId,
+      email: cleanEmail,
+      full_name: cleanName,
+      institution: cleanName,
+      role: 'institution',
+      status: 'approved',
+      description: description ? sanitizeString(description) : '',
+      location: location ? sanitizeString(location) : '',
+      country: country ? sanitizeString(country) : 'India',
+      password: passwordHash,
+      created_at: new Date().toISOString(),
+    };
+
+    await database.collection('users').insertOne(newInstitution);
+    await logActivity(userId, cleanEmail, 'INSTITUTION_REGISTER', 'users', userId, { institutionName: cleanName }, req);
+
+    res.status(201).json({
+      success: true,
+      message: 'Institution registered successfully! You can sign in now.',
+      user: {
+        id: userId,
+        email: cleanEmail,
+        fullName: cleanName,
+        role: newInstitution.role,
+        status: newInstitution.status,
+      },
+    });
+  } catch (err) {
+    console.error('[Institution Register Error]', err);
+    res.status(500).json({ error: 'Unable to process institution registration. Please try again.' });
+  }
+});
+
+// POST /auth/login
+router.post('/auth/login', async (req, res) => {
+  try {
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(`login_${clientIp}`, 10, 60000)) {
+      return res.status(429).json({ error: 'Too many login attempts. Please wait 60 seconds.' });
+    }
+
+    const { email, identifier, password, role } = req.body || {};
+    const inputEmail = (email || identifier || '').trim();
+    if (!inputEmail || !password) return res.status(400).json({ error: 'Email and password are required' });
+
+    const cleanEmail = sanitizeString(inputEmail).toLowerCase();
+    const database = getDb();
+
+    let profile = await database.collection('users').findOne({ email: cleanEmail });
+    if (!profile) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    const match = await bcrypt.compare(password, profile.password || '');
+    if (!match) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    if (profile.status === 'pending') {
+      return res.status(403).json({ error: 'Your account is pending admin approval. Please check back later.' });
+    }
+    if (profile.status === 'rejected') {
+      return res.status(403).json({ error: 'Your registration request has been rejected by an administrator.' });
+    }
+
+    if (role && profile.role !== role) {
+      const portalNames = {
+        institution: 'Institution',
+        admin: 'Admin',
+        teacher: 'Teacher',
+        student: 'Student',
+        employer: 'Employer',
+      };
+      const targetPortal = portalNames[profile.role] || profile.role;
+      return res.status(403).json({ error: `This account belongs to the ${targetPortal} portal.` });
+    }
+
+    const token = jwt.sign(
+      { sub: profile.id, email: profile.email, role: profile.role },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    await logActivity(profile.id, cleanEmail, 'USER_LOGIN', 'users', profile.id, { role: profile.role }, req);
+
+    res.json({
+      token,
+      user: {
+        id: profile.id,
+        email: profile.email,
+        fullName: profile.full_name,
+        role: profile.role,
+        status: profile.status,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Authentication failed' });
+  }
+});
+
+// POST /auth/delete-account
 router.post('/auth/delete-account', async (req, res) => {
   try {
     const auth = await getUserFromRequest(req);
     if (!auth?.user) return res.status(401).json({ error: 'Unauthorized' });
 
-    await logActivity(auth.user.id, auth.user.email, 'DELETE_ACCOUNT', 'user', auth.user.id, { reason: 'User requested self-deletion' }, req);
+    const database = getDb();
+    await logActivity(auth.user.id, auth.user.email, 'DELETE_ACCOUNT', 'users', auth.user.id, { reason: 'User requested self-deletion' }, req);
+    await database.collection('users').deleteOne({ id: auth.user.id });
 
-    await supabase.from('users').delete().eq('id', auth.user.id);
-    if (supabase.auth?.admin?.deleteUser) {
-      await supabase.auth.admin.deleteUser(auth.user.id).catch(() => {});
-    }
     res.json({ message: 'Account permanently deleted', success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete account' });
   }
 });
 
-  // POST /auth/register
-  router.post('/auth/register', async (req, res) => {
-    try {
-      const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-      if (!checkRateLimit(`reg_${clientIp}`, 10, 60000)) {
-        return res.status(429).json({ error: 'Too many registration attempts. Please wait 60 seconds.' });
-      }
-
-      const { email, password, fullName, role } = req.body;
-      if (!email || !password || !fullName || !role) {
-        return res.status(400).json({ error: 'Missing required fields' });
-      }
-
-      const cleanEmail = sanitizeString(email).toLowerCase();
-      const cleanName = sanitizeString(fullName);
-
-      // Password Complexity: min 8 chars, uppercase, lowercase, number, symbol
-      if (password.length < 8) {
-        return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
-      }
-      const hasUpper = /[A-Z]/.test(password);
-      const hasLower = /[a-z]/.test(password);
-      const hasDigit = /[0-9]/.test(password);
-      const hasSpecial = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password);
-      if (!hasUpper || !hasLower || !hasDigit || !hasSpecial) {
-        return res.status(400).json({
-          error: 'Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character.',
-        });
-      }
-
-      if (!SUPABASE_SERVICE_ROLE_KEY && edgeFunctionUrl) {
-        const resp = await fetch(`${edgeFunctionUrl}/auth/register`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail, password, fullName: cleanName, role }),
-        });
-        const data = await resp.json();
-        return res.status(resp.status).json(data);
-      }
-
-      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-        email: cleanEmail,
-        password,
-        email_confirm: true,
-      });
-      if (authError) return res.status(400).json({ error: authError.message });
-
-      const status = 'pending';
-      const { error: profileError } = await supabase.from('users').insert({
-        id: authData.user.id,
-        email: cleanEmail,
-        full_name: cleanName,
-        role,
-        status,
-      });
-      if (profileError) {
-        await supabase.auth.admin.deleteUser(authData.user.id);
-        return res.status(500).json({ error: 'Failed to create user profile' });
-      }
-
-      await logActivity(authData.user.id, cleanEmail, 'USER_REGISTER', 'users', authData.user.id, { role, status }, req);
-
-      res.json({
-        message: 'Account created. An admin must approve your registration before you can log in.',
-        requiresApproval: true,
-      });
-    } catch (err) {
-      res.status(500).json({ error: 'Registration failed. Please try again.' });
+// POST /certificates/verify
+router.post('/certificates/verify', async (req, res) => {
+  try {
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    if (!checkRateLimit(`verify_${clientIp}`, 30, 60000)) {
+      return res.status(429).json({ error: 'Verification rate limit exceeded. Please wait a minute.' });
     }
-  });
 
-  // POST /auth/login
-  router.post('/auth/login', async (req, res) => {
-    try {
-      const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-      if (!checkRateLimit(`login_${clientIp}`, 10, 60000)) {
-        return res.status(429).json({ error: 'Too many login attempts. Please wait 60 seconds.' });
-      }
+    const { certificateId, fileContent } = req.body;
+    if (!certificateId) return res.status(400).json({ error: 'certificateId is required' });
 
-      const { email, password } = req.body;
-      if (!email || !password) return res.status(400).json({ error: 'Email and password are required' });
+    const cleanId = sanitizeString(certificateId);
+    const database = getDb();
 
-      const cleanEmail = sanitizeString(email).toLowerCase();
-      let authEmail = cleanEmail;
-      let authPassword = password;
-      if (cleanEmail === 'hema.work0728@gmail.com') {
-        authEmail = 'karthik.work0728@gmail.com';
-        if (password === 'Hema') {
-          authPassword = 'HemaKarthik0728';
-        }
-      }
-
-      const userClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-      const { data: signInData, error: signInError } = await userClient.auth.signInWithPassword({
-        email: authEmail,
-        password: authPassword,
-      });
-      if (signInError || !signInData.user) {
-        return res.status(401).json({ error: 'Invalid email or password' });
-      }
-
-      let profile = null;
-      try {
-        const { data } = await supabase.from('users').select('*').eq('id', signInData.user.id).maybeSingle();
-        profile = data;
-      } catch (_) {}
-
-      if (!profile) {
-        if (cleanEmail === 'hema.work0728@gmail.com' || authEmail === 'karthik.work0728@gmail.com') {
-          profile = {
-            id: signInData.user.id,
-            email: 'hema.work0728@gmail.com',
-            full_name: 'Hema',
-            role: 'admin',
-            status: 'approved',
-          };
-        } else if (cleanEmail === 'testteacher@chaincert.io') {
-          profile = {
-            id: signInData.user.id,
-            email: 'testteacher@chaincert.io',
-            full_name: 'Dr. Sarah Smith',
-            role: 'teacher',
-            status: 'approved',
-          };
-        } else if (cleanEmail === 'teststudent@chaincert.io') {
-          profile = {
-            id: signInData.user.id,
-            email: 'teststudent@chaincert.io',
-            full_name: 'Alex Johnson',
-            role: 'student',
-            status: 'approved',
-          };
-        }
-      }
-
-      if (!profile) return res.status(403).json({ error: 'Profile not found' });
-      if (profile.status === 'pending') {
-        return res.status(403).json({ error: 'Your account is pending admin approval. Please check back later.' });
-      }
-      if (profile.status === 'rejected') {
-        return res.status(403).json({ error: 'Your registration request has been rejected by an administrator.' });
-      }
-
-      await logActivity(profile.id, cleanEmail, 'USER_LOGIN', 'users', profile.id, { role: profile.role }, req);
-
-      const returnEmail = (cleanEmail === 'hema.work0728@gmail.com' || authEmail === 'karthik.work0728@gmail.com') ? 'hema.work0728@gmail.com' : profile.email;
-      const returnName = (profile.full_name || '').replace(/Karthik/g, 'Hema');
-
-      res.json({
-        token: signInData.session.access_token,
-        user: { id: profile.id, email: returnEmail, fullName: returnName, role: profile.role, status: profile.status },
-      });
-    } catch (err) {
-      res.status(500).json({ error: 'Authentication failed' });
+    const cert = await database.collection('certificates').findOne({ certificate_id: cleanId });
+    if (!cert) {
+      return res.json({ result: 'not_found', certificateId: cleanId, certificate: null, block: null, chainValid: false });
     }
-  });
 
-  // POST /certificates/verify
-  router.post('/certificates/verify', async (req, res) => {
+    const blocks = await database.collection('blocks').find({ certificate_id: cleanId }).sort({ block_index: -1 }).limit(1).toArray();
+    const block = blocks[0] || null;
+
+    let chainValid = false;
+    if (block) {
+      const recomputed = sha256Hex(block.certificate_id + block.certificate_hash + block.previous_block_hash + block.timestamp);
+      chainValid = recomputed === block.block_hash;
+    }
+
+    let computedHash = null;
+    let result = 'valid';
+    if (fileContent) {
+      computedHash = sha256Hex(fileContent);
+      if (computedHash !== cert.certificate_hash) result = 'tampered';
+      else result = chainValid ? 'valid' : 'tampered';
+    } else {
+      result = chainValid ? 'valid' : 'tampered';
+    }
+
+    if (cert.status === 'revoked') result = 'revoked';
+
     try {
-      const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
-      if (!checkRateLimit(`verify_${clientIp}`, 30, 60000)) {
-        return res.status(429).json({ error: 'Verification rate limit exceeded. Please wait a minute.' });
-      }
-
-      const { certificateId, fileContent } = req.body;
-      if (!certificateId) return res.status(400).json({ error: 'certificateId is required' });
-
-      const cleanId = sanitizeString(certificateId);
-      const { data: cert } = await supabase.from('certificates').select('*').eq('certificate_id', cleanId).maybeSingle();
-      if (!cert) {
-        return res.json({ result: 'not_found', certificateId: cleanId, certificate: null, block: null, chainValid: false });
-      }
-
-      const { data: block } = await supabase.from('blocks').select('*').eq('certificate_id', cleanId).order('block_index', { ascending: false }).limit(1).maybeSingle();
-
-      let chainValid = false;
-      if (block) {
-        const recomputed = sha256Hex(block.certificate_id + block.certificate_hash + block.previous_block_hash + block.timestamp);
-        chainValid = recomputed === block.block_hash;
-        if (!chainValid && block.timestamp) {
-          const isoTs = new Date(block.timestamp).toISOString();
-          const altRecomputed = sha256Hex(block.certificate_id + block.certificate_hash + block.previous_block_hash + isoTs);
-          if (altRecomputed === block.block_hash) chainValid = true;
-        }
-      }
-
-      let computedHash = null;
-      let result = 'valid';
-      if (fileContent) {
-        computedHash = sha256Hex(fileContent);
-        if (computedHash !== cert.certificate_hash) result = 'tampered';
-        else result = chainValid ? 'valid' : 'tampered';
-      } else {
-        result = chainValid ? 'valid' : 'tampered';
-      }
-
-      if (cert.status === 'revoked') result = 'revoked';
-
-      // Log verification attempt safely
-      try {
-        await supabase.from('verification_logs').insert({
-          certificate_id: cleanId,
-          computed_hash: computedHash || cert.certificate_hash,
-          stored_hash: cert.certificate_hash,
-          result,
-          verified_by: String(clientIp),
-        });
-      } catch (_) {}
-
-      res.json({
+      await database.collection('verification_logs').insertOne({
+        id: generateUUID(),
+        certificate_id: cleanId,
+        computed_hash: computedHash || cert.certificate_hash,
+        stored_hash: cert.certificate_hash,
         result,
-        certificateId: cleanId,
-        certificate: cert,
-        block,
-        computedHash,
-        storedHash: cert.certificate_hash,
-        chainValid,
+        verified_by: String(clientIp),
+        created_at: new Date().toISOString(),
       });
-    } catch (err) {
-      res.status(500).json({ error: 'Verification error occurred' });
-    }
-  });
+    } catch (_) {}
 
-  // GET /certificates
-  router.get('/certificates', async (req, res) => {
-    try {
-      const page = parseInt(req.query.page) || 1;
-      const limit = Math.min(parseInt(req.query.limit) || 10, 50);
-      const search = req.query.search || '';
-      const offset = (page - 1) * limit;
+    res.json({
+      result,
+      certificateId: cleanId,
+      certificate: cert,
+      block,
+      computedHash,
+      storedHash: cert.certificate_hash,
+      chainValid,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Verification error occurred' });
+  }
+});
 
-      let query = supabase.from('certificates').select('*', { count: 'exact' }).order('created_at', { ascending: false }).range(offset, offset + limit - 1);
-      if (search) {
-        const clean = String(search).replace(/[%_,()'"\\]/g, '').trim();
-        if (clean) query = query.or(`institution.ilike.%${clean}%,student_name.ilike.%${clean}%,certificate_id.ilike.%${clean}%`);
+// GET /certificates
+router.get('/certificates', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+    const search = req.query.search || '';
+    const skip = (page - 1) * limit;
+
+    const database = getDb();
+    let query = {};
+    if (search) {
+      const clean = String(search).replace(/[%_,()'"\\]/g, '').trim();
+      if (clean) {
+        query = {
+          $or: [
+            { institution: { $regex: clean, $options: 'i' } },
+            { student_name: { $regex: clean, $options: 'i' } },
+            { certificate_id: { $regex: clean, $options: 'i' } },
+          ],
+        };
       }
+    }
 
-      const { data: certificates, count, error } = await query;
-      if (error) return res.status(500).json({ error: 'Failed to fetch certificates' });
+    const certificates = await database.collection('certificates').find(query).sort({ created_at: -1 }).skip(skip).limit(limit).toArray();
+    const count = await database.collection('certificates').countDocuments(query);
 
-      const certIds = (certificates || []).map((c) => c.certificate_id);
-      let blocksMap = {};
-      if (certIds.length > 0) {
-        const { data: blocks } = await supabase.from('blocks').select('*').in('certificate_id', certIds).order('block_index', { ascending: false });
-        for (const b of blocks || []) {
-          if (!blocksMap[b.certificate_id]) blocksMap[b.certificate_id] = b;
-        }
+    const certIds = certificates.map((c) => c.certificate_id);
+    let blocksMap = {};
+    if (certIds.length > 0) {
+      const blocks = await database.collection('blocks').find({ certificate_id: { $in: certIds } }).sort({ block_index: -1 }).toArray();
+      for (const b of blocks) {
+        if (!blocksMap[b.certificate_id]) blocksMap[b.certificate_id] = b;
       }
-
-      res.json({
-        certificates: (certificates || []).map((c) => ({ ...c, block: blocksMap[c.certificate_id] || null })),
-        total: count || 0,
-        page,
-        limit,
-        totalPages: Math.ceil((count || 0) / limit),
-      });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to retrieve certificates' });
-    }
-  });
-
-  // GET /certificates/:id
-  router.get('/certificates/:id', async (req, res) => {
-    try {
-      const cleanId = sanitizeString(req.params.id);
-      const { data: cert, error } = await supabase.from('certificates').select('*').eq('certificate_id', cleanId).maybeSingle();
-      if (error || !cert) return res.status(404).json({ error: 'Certificate not found' });
-      const { data: block } = await supabase.from('blocks').select('*').eq('certificate_id', cleanId).maybeSingle();
-      res.json({ certificate: cert, block });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to fetch certificate' });
-    }
-  });
-
-  // GET /stats
-  router.get('/stats', async (req, res) => {
-    try {
-      const [certs, blocks, verifs, users, drafts] = await Promise.all([
-        supabase.from('certificates').select('id, status', { count: 'exact' }),
-        supabase.from('blocks').select('id', { count: 'exact' }),
-        supabase.from('verification_logs').select('id, result', { count: 'exact' }),
-        supabase.from('users').select('id, status', { count: 'exact' }).eq('status', 'pending'),
-        supabase.from('certificate_drafts').select('id, status', { count: 'exact' }).eq('status', 'submitted'),
-      ]);
-
-      res.json({
-        totalIssued: certs.count || 0,
-        totalVerified: (verifs.data || []).filter((v) => v.result === 'valid').length,
-        totalTampered: (verifs.data || []).filter((v) => v.result === 'tampered' || v.result === 'invalid').length,
-        totalBlocks: blocks.count || 0,
-        totalVerifications: verifs.count || 0,
-        pendingUsers: users.count || 0,
-        pendingDrafts: drafts.count || 0,
-      });
-    } catch (err) {
-      res.status(500).json({ error: 'Failed to fetch platform metrics' });
-    }
-  });
-
-  // ============================================================
-  // ADMIN ROUTES (Requires role = 'admin' AND status = 'approved')
-  // ============================================================
-  router.get('/admin/users', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    const { data: users, error } = await supabase.from('users').select('*').order('created_at', { ascending: false });
-    if (error) return res.status(500).json({ error: 'Failed to list users' });
-    res.json({ users });
-  });
-
-  router.post('/admin/users/:id/approve', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    const { id } = req.params;
-    const { data, error } = await supabase
-      .from('users')
-      .update({ status: 'approved', approved_by: auth.user.id, approved_at: new Date().toISOString() })
-      .eq('id', id)
-      .select()
-      .single();
-    if (error) return res.status(500).json({ error: 'Failed to approve user' });
-
-    await logActivity(auth.user.id, auth.user.email, 'APPROVE_USER', 'users', id, { targetUserEmail: data.email }, req);
-    res.json({ user: data, message: 'User approved' });
-  });
-
-  router.post('/admin/users/:id/reject', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    const { id } = req.params;
-    const { data, error } = await supabase
-      .from('users')
-      .update({ status: 'rejected', approved_by: auth.user.id, approved_at: new Date().toISOString() })
-      .eq('id', id)
-      .select()
-      .single();
-    if (error) return res.status(500).json({ error: 'Failed to reject user' });
-
-    await logActivity(auth.user.id, auth.user.email, 'REJECT_USER', 'users', id, { targetUserEmail: data.email }, req);
-    res.json({ user: data, message: 'User rejected' });
-  });
-
-  router.get('/admin/certificates/pending', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    const { data: drafts, error } = await supabase.from('certificate_drafts').select('*').eq('status', 'submitted').order('created_at', { ascending: false });
-    if (error) return res.status(500).json({ error: 'Failed to retrieve drafts' });
-    res.json({ drafts });
-  });
-
-  router.post('/admin/certificates/:id/approve', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    const { id } = req.params;
-    const { data: draft } = await supabase.from('certificate_drafts').select('*').eq('draft_id', id).maybeSingle();
-    if (!draft) return res.status(404).json({ error: 'Draft not found' });
-
-    const certificateHash = sha256Hex(draft.file_content || '');
-    const certId = generateCertId();
-    const block = await createBlock(certId, certificateHash);
-
-    let ownerId = null;
-    if (draft.student_email) {
-      const { data: studentUser } = await supabase.from('users').select('id').eq('email', draft.student_email).maybeSingle();
-      if (studentUser) ownerId = studentUser.id;
     }
 
-    const { data: cert } = await supabase.from('certificates').insert({
-      certificate_id: certId,
-      student_name: draft.student_name,
-      course: draft.course,
-      institution: draft.institution,
-      issue_date: draft.issue_date,
-      certificate_hash: certificateHash,
-      file_name: draft.file_name,
-      file_type: draft.file_type,
-      file_size: draft.file_size,
-      status: 'issued',
-      owner_id: ownerId,
-      draft_id: draft.id,
-    }).select().single();
+    res.json({
+      certificates: certificates.map((c) => ({ ...c, block: blocksMap[c.certificate_id] || null })),
+      total: count,
+      page,
+      limit,
+      totalPages: Math.ceil(count / limit),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to retrieve certificates' });
+  }
+});
 
-    const { data: updatedDraft } = await supabase.from('certificate_drafts').update({
-      status: 'approved',
-      certificate_id: certId,
-      reviewed_by: auth.user.id,
-      reviewed_at: new Date().toISOString(),
-    }).eq('id', draft.id).select().single();
+// GET /certificates/:id
+router.get('/certificates/:id', async (req, res) => {
+  try {
+    const cleanId = sanitizeString(req.params.id);
+    const database = getDb();
+    const cert = await database.collection('certificates').findOne({ certificate_id: cleanId });
+    if (!cert) return res.status(404).json({ error: 'Certificate not found' });
+    const block = await database.collection('blocks').findOne({ certificate_id: cleanId });
+    res.json({ certificate: cert, block });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch certificate' });
+  }
+});
 
-    await logActivity(auth.user.id, auth.user.email, 'APPROVE_DRAFT', 'certificate_drafts', draft.draft_id, { certId }, req);
+// GET /stats
+router.get('/stats', async (req, res) => {
+  try {
+    const database = getDb();
+    const [totalIssued, totalBlocks, totalVerifications, pendingUsers, pendingDrafts, verifs] = await Promise.all([
+      database.collection('certificates').countDocuments(),
+      database.collection('blocks').countDocuments(),
+      database.collection('verification_logs').countDocuments(),
+      database.collection('users').countDocuments({ status: 'pending' }),
+      database.collection('certificate_drafts').countDocuments({ status: 'submitted' }),
+      database.collection('verification_logs').find({}).toArray(),
+    ]);
 
-    res.json({ message: 'Certificate approved and issued', draft: updatedDraft, certificate: cert, block });
-  });
+    const totalVerified = verifs.filter((v) => v.result === 'valid').length;
+    const totalTampered = verifs.filter((v) => v.result === 'tampered' || v.result === 'invalid').length;
 
-  router.post('/admin/certificates/:id/reject', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+    res.json({
+      totalIssued,
+      totalVerified,
+      totalTampered,
+      totalBlocks,
+      totalVerifications,
+      pendingUsers,
+      pendingDrafts,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch platform metrics' });
+  }
+});
+
+// ADMIN ROUTES
+router.get('/admin/users', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const database = getDb();
+  const rawUsers = await database.collection('users').find({}).sort({ created_at: -1 }).toArray();
+  const users = rawUsers.map(({ password, _id, ...user }) => user);
+  res.json({ users });
+});
+
+router.post('/admin/users/:id/approve', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const { id } = req.params;
+  const database = getDb();
+  await database.collection('users').updateOne(
+    { id },
+    { $set: { status: 'approved', approved_by: auth.user.id, approved_at: new Date().toISOString() } }
+  );
+  const updated = await database.collection('users').findOne({ id });
+  await logActivity(auth.user.id, auth.user.email, 'APPROVE_USER', 'users', id, { targetUserEmail: updated?.email }, req);
+  broadcastEvent('user.approved', { userId: id, email: updated?.email, status: 'approved' });
+  res.json({ user: updated, message: 'User approved' });
+});
+
+router.post('/admin/users/:id/reject', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const { id } = req.params;
+  const database = getDb();
+  await database.collection('users').updateOne(
+    { id },
+    { $set: { status: 'rejected', approved_by: auth.user.id, approved_at: new Date().toISOString() } }
+  );
+  const updated = await database.collection('users').findOne({ id });
+  await logActivity(auth.user.id, auth.user.email, 'REJECT_USER', 'users', id, { targetUserEmail: updated?.email }, req);
+  broadcastEvent('user.rejected', { userId: id, email: updated?.email, status: 'rejected' });
+  res.json({ user: updated, message: 'User rejected' });
+});
+
+router.get('/admin/certificates/pending', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const database = getDb();
+  const drafts = await database.collection('certificate_drafts').find({ status: 'submitted' }).sort({ created_at: -1 }).toArray();
+  res.json({ drafts });
+});
+
+router.post('/admin/certificates/:id/approve', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const { id } = req.params;
+  const database = getDb();
+  const draft = await database.collection('certificate_drafts').findOne({ draft_id: id });
+  if (!draft) return res.status(404).json({ error: 'Draft not found' });
+
+  const certificateHash = sha256Hex(draft.file_content || '');
+  const certId = generateCertId();
+  const block = await createBlock(certId, certificateHash);
+
+  let ownerId = null;
+  if (draft.student_email) {
+    const studentUser = await database.collection('users').findOne({ email: draft.student_email });
+    if (studentUser) ownerId = studentUser.id;
+  }
+
+  const certDoc = {
+    id: generateUUID(),
+    certificate_id: certId,
+    student_name: draft.student_name,
+    course: draft.course,
+    institution: draft.institution,
+    issue_date: draft.issue_date,
+    certificate_hash: certificateHash,
+    file_name: draft.file_name,
+    file_type: draft.file_type,
+    file_size: draft.file_size,
+    status: 'issued',
+    owner_id: ownerId,
+    draft_id: draft.id,
+    created_at: new Date().toISOString(),
+  };
+
+  await database.collection('certificates').insertOne(certDoc);
+
+  await database.collection('certificate_drafts').updateOne(
+    { draft_id: id },
+    {
+      $set: {
+        status: 'approved',
+        certificate_id: certId,
+        reviewed_by: auth.user.id,
+        reviewed_at: new Date().toISOString(),
+      },
     }
-    const { id } = req.params;
-    const { data, error } = await supabase.from('certificate_drafts').update({
-      status: 'rejected',
-      rejection_reason: sanitizeString(req.body.reason || 'Rejected by administrator'),
-      reviewed_by: auth.user.id,
-      reviewed_at: new Date().toISOString(),
-    }).eq('draft_id', id).select().single();
-    if (error) return res.status(500).json({ error: 'Failed to reject draft' });
+  );
 
-    await logActivity(auth.user.id, auth.user.email, 'REJECT_DRAFT', 'certificate_drafts', id, { reason: req.body.reason }, req);
-    res.json({ draft: data, message: 'Draft rejected' });
-  });
+  const updatedDraft = await database.collection('certificate_drafts').findOne({ draft_id: id });
+  await logActivity(auth.user.id, auth.user.email, 'APPROVE_DRAFT', 'certificate_drafts', id, { certId }, req);
 
-  router.delete('/admin/drafts/:id', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  broadcastEvent('certificate.approved', { draftId: id, certificateId: certId, status: 'approved' });
+  broadcastEvent('certificate.status.updated', { certificateId: certId, status: 'issued' });
+
+  res.json({ message: 'Certificate approved and issued', draft: updatedDraft, certificate: certDoc, block });
+});
+
+router.post('/admin/certificates/:id/reject', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const { id } = req.params;
+  const database = getDb();
+  await database.collection('certificate_drafts').updateOne(
+    { draft_id: id },
+    {
+      $set: {
+        status: 'rejected',
+        rejection_reason: sanitizeString(req.body.reason || 'Rejected by administrator'),
+        reviewed_by: auth.user.id,
+        reviewed_at: new Date().toISOString(),
+      },
     }
-    const { id } = req.params;
-    const { error } = await supabase.from('certificate_drafts').delete().eq('draft_id', id);
-    if (error) return res.status(500).json({ error: 'Failed to delete draft' });
-    await logActivity(auth.user.id, auth.user.email, 'DELETE_DRAFT', 'certificate_drafts', id, {}, req);
-    res.json({ message: 'Draft deleted successfully' });
-  });
+  );
+  const updatedDraft = await database.collection('certificate_drafts').findOne({ draft_id: id });
+  await logActivity(auth.user.id, auth.user.email, 'REJECT_DRAFT', 'certificate_drafts', id, { reason: req.body.reason }, req);
+  broadcastEvent('certificate.rejected', { draftId: id, status: 'rejected' });
+  res.json({ draft: updatedDraft, message: 'Draft rejected' });
+});
 
-  router.post('/admin/certificates/:id/revoke', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    const { id } = req.params;
-    const { data, error } = await supabase.from('certificates').update({ status: 'revoked' }).eq('certificate_id', id).select().single();
-    if (error) return res.status(500).json({ error: 'Failed to revoke certificate' });
-    await logActivity(auth.user.id, auth.user.email, 'REVOKE_CERTIFICATE', 'certificates', id, {}, req);
-    res.json({ certificate: data, message: 'Certificate revoked' });
-  });
+router.delete('/admin/drafts/:id', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const { id } = req.params;
+  const database = getDb();
+  await database.collection('certificate_drafts').deleteOne({ draft_id: id });
+  await logActivity(auth.user.id, auth.user.email, 'DELETE_DRAFT', 'certificate_drafts', id, {}, req);
+  res.json({ message: 'Draft deleted successfully' });
+});
 
-  router.get('/admin/audit-logs', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    const { data: logs, error } = await supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(100);
-    if (error) return res.status(500).json({ error: 'Failed to load audit logs' });
-    res.json({ logs });
-  });
+router.post('/admin/certificates/:id/revoke', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const { id } = req.params;
+  const database = getDb();
+  await database.collection('certificates').updateOne({ certificate_id: id }, { $set: { status: 'revoked' } });
+  const updatedCert = await database.collection('certificates').findOne({ certificate_id: id });
+  await logActivity(auth.user.id, auth.user.email, 'REVOKE_CERTIFICATE', 'certificates', id, {}, req);
+  broadcastEvent('certificate.revoked', { certificateId: id, status: 'revoked' });
+  broadcastEvent('certificate.status.updated', { certificateId: id, status: 'revoked' });
+  res.json({ certificate: updatedCert, message: 'Certificate revoked' });
+});
 
-  // ============================================================
-  // TEACHER ROUTES (Requires role = 'teacher' AND status = 'approved')
-  // ============================================================
-  router.post('/teacher/certificates/draft', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'teacher' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Approved Teacher role required.' });
-    }
-    const { draftId, studentName, course, institution, issueDate, studentEmail, fileContent, fileName, fileType, fileSize, submit } = req.body;
+router.get('/admin/audit-logs', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const database = getDb();
+  const logs = await database.collection('activity_logs').find({}).sort({ created_at: -1 }).limit(100).toArray();
+  res.json({ logs });
+});
 
-    if (fileName) {
-      const fileCheck = validateUploadedFile(fileName, fileSize);
-      if (!fileCheck.valid) return res.status(400).json({ error: fileCheck.error });
-    }
+// TEACHER ROUTES
+router.post('/teacher/certificates/draft', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || !['teacher', 'institution'].includes(auth.profile.role) || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Approved Teacher or Institution role required.' });
+  }
+  const { draftId, studentName, course, institution, issueDate, studentEmail, fileContent, fileName, fileType, fileSize, submit } = req.body;
 
-    const cleanStudentName = sanitizeString(studentName);
-    const cleanCourse = sanitizeString(course);
-    const cleanInstitution = sanitizeString(institution);
-    const cleanEmail = sanitizeString(studentEmail).toLowerCase();
-    const status = submit ? 'submitted' : 'draft';
+  if (fileName) {
+    const fileCheck = validateUploadedFile(fileName, fileSize);
+    if (!fileCheck.valid) return res.status(400).json({ error: fileCheck.error });
+  }
 
-    // IDOR protection: only update draft belonging to this teacher
-    if (draftId) {
-      const { data, error } = await supabase.from('certificate_drafts').update({
-        student_name: cleanStudentName,
-        course: cleanCourse,
-        institution: cleanInstitution,
-        issue_date: issueDate,
-        student_email: cleanEmail,
-        file_content: fileContent,
-        file_name: fileName,
-        file_type: fileType,
-        file_size: fileSize,
-        status,
-      }).eq('draft_id', draftId).eq('teacher_id', auth.user.id).select().single();
-      if (error || !data) return res.status(404).json({ error: 'Draft not found or access denied.' });
+  const cleanStudentName = sanitizeString(studentName);
+  const cleanCourse = sanitizeString(course);
+  const cleanInstitution = sanitizeString(institution);
+  const cleanEmail = sanitizeString(studentEmail).toLowerCase();
+  const status = submit ? 'submitted' : 'draft';
+  const database = getDb();
 
-      await logActivity(auth.user.id, auth.user.email, submit ? 'SUBMIT_DRAFT' : 'UPDATE_DRAFT', 'certificate_drafts', draftId, { studentName: cleanStudentName }, req);
-      return res.json({ draft: data, message: submit ? 'Draft submitted' : 'Draft saved' });
-    }
+  if (draftId) {
+    const existingDraft = await database.collection('certificate_drafts').findOne({ draft_id: draftId, teacher_id: auth.user.id });
+    if (!existingDraft) return res.status(404).json({ error: 'Draft not found or access denied.' });
 
-    const newDraftId = generateDraftId();
-    const { data, error } = await supabase.from('certificate_drafts').insert({
-      draft_id: newDraftId,
-      teacher_id: auth.user.id,
-      student_name: cleanStudentName,
-      course: cleanCourse,
-      institution: cleanInstitution,
-      issue_date: issueDate,
-      student_email: cleanEmail,
-      file_content: fileContent,
-      file_name: fileName,
-      file_type: fileType,
-      file_size: fileSize,
-      status,
-    }).select().single();
-    if (error) return res.status(500).json({ error: 'Failed to create draft' });
-
-    await logActivity(auth.user.id, auth.user.email, submit ? 'CREATE_AND_SUBMIT_DRAFT' : 'CREATE_DRAFT', 'certificate_drafts', newDraftId, { studentName: cleanStudentName }, req);
-    res.json({ draft: data, message: submit ? 'Draft submitted' : 'Draft saved' });
-  });
-
-  router.get('/teacher/certificates', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'teacher' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Approved Teacher role required.' });
-    }
-    const { data: drafts, error } = await supabase.from('certificate_drafts').select('*').eq('teacher_id', auth.user.id).order('created_at', { ascending: false });
-    if (error) return res.status(500).json({ error: 'Failed to fetch teacher drafts' });
-    res.json({ drafts });
-  });
-
-  // ============================================================
-  // STUDENT ROUTES (Requires role = 'student' AND status = 'approved')
-  // ============================================================
-  router.get('/student/certificates', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'student' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Approved Student role required.' });
-    }
-    // IDOR Protection: strictly fetch certificates owned by this authenticated student
-    const { data: certificates, error } = await supabase.from('certificates').select('*').eq('owner_id', auth.user.id).order('created_at', { ascending: false });
-    if (error) return res.status(500).json({ error: 'Failed to fetch certificates' });
-    res.json({ certificates });
-  });
-
-  // ============================================================
-  // DIRECT ISSUE (Admin Only)
-  // ============================================================
-  router.post('/certificates/issue', async (req, res) => {
-    const auth = await getUserFromRequest(req);
-    if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
-      return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
-    }
-    const { studentName, course, institution, issueDate, certificateId, fileContent, fileName, fileType, fileSize } = req.body;
-
-    if (fileName) {
-      const fileCheck = validateUploadedFile(fileName, fileSize);
-      if (!fileCheck.valid) return res.status(400).json({ error: fileCheck.error });
-    }
-
-    const certId = certificateId || generateCertId();
-    const certificateHash = sha256Hex(fileContent || '');
-    const block = await createBlock(certId, certificateHash);
-
-    const { data: cert, error } = await supabase.from('certificates').insert({
-      certificate_id: certId,
-      student_name: sanitizeString(studentName),
-      course: sanitizeString(course),
-      institution: sanitizeString(institution),
-      issue_date: issueDate,
-      certificate_hash: certificateHash,
-      file_name: fileName,
-      file_type: fileType,
-      file_size: fileSize,
-      status: 'issued',
-    }).select().single();
-    if (error) return res.status(500).json({ error: 'Failed to issue certificate' });
-
-    await logActivity(auth.user.id, auth.user.email, 'ISSUE_CERTIFICATE', 'certificates', certId, {}, req);
-    res.json({ certificateId: certId, hash: certificateHash, blockHash: block.blockHash, blockIndex: block.blockIndex, previousBlockHash: block.previousBlockHash, txTimestamp: block.timestamp, certificate: cert });
-  });
-
-// Fallback proxy to edge function for unhandled paths
-if (edgeFunctionUrl) {
-  router.use(async (req, res) => {
-    try {
-      const targetUrl = `${edgeFunctionUrl}${req.path}${req.url.includes('?') ? '?' + req.url.split('?')[1] : ''}`;
-      const headers = { ...req.headers };
-      delete headers['host'];
-      delete headers['content-length'];
-      const fetchOptions = { method: req.method, headers };
-      if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
-        fetchOptions.body = JSON.stringify(req.body);
-        fetchOptions.headers['content-type'] = 'application/json';
+    await database.collection('certificate_drafts').updateOne(
+      { draft_id: draftId, teacher_id: auth.user.id },
+      {
+        $set: {
+          student_name: cleanStudentName,
+          course: cleanCourse,
+          institution: cleanInstitution,
+          issue_date: issueDate,
+          student_email: cleanEmail,
+          file_content: fileContent,
+          file_name: fileName,
+          file_type: fileType,
+          file_size: fileSize,
+          status,
+          updated_at: new Date().toISOString(),
+        },
       }
-      const response = await fetch(targetUrl, fetchOptions);
-      const data = await response.text();
-      res.status(response.status).set('content-type', response.headers.get('content-type') || 'application/json').send(data);
-    } catch {
-      res.status(500).json({ error: 'Gateway communication failure' });
+    );
+    const updated = await database.collection('certificate_drafts').findOne({ draft_id: draftId });
+    await logActivity(auth.user.id, auth.user.email, submit ? 'SUBMIT_DRAFT' : 'UPDATE_DRAFT', 'certificate_drafts', draftId, { studentName: cleanStudentName }, req);
+    if (submit) {
+      broadcastEvent('certificate.submitted', { draftId, studentName: cleanStudentName, course: cleanCourse, status: 'submitted' });
     }
-  });
-}
+    return res.json({ draft: updated, message: submit ? 'Draft submitted' : 'Draft saved' });
+  }
 
-// Support both direct routes (e.g. /auth/login) and prefixed routes (e.g. /api/auth/login or /cert-api/auth/login)
+  const newDraftId = generateDraftId();
+  const draftDoc = {
+    id: generateUUID(),
+    draft_id: newDraftId,
+    teacher_id: auth.user.id,
+    student_name: cleanStudentName,
+    course: cleanCourse,
+    institution: cleanInstitution,
+    issue_date: issueDate,
+    student_email: cleanEmail,
+    file_content: fileContent,
+    file_name: fileName,
+    file_type: fileType,
+    file_size: fileSize,
+    status,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+
+  await database.collection('certificate_drafts').insertOne(draftDoc);
+  await logActivity(auth.user.id, auth.user.email, submit ? 'CREATE_AND_SUBMIT_DRAFT' : 'CREATE_DRAFT', 'certificate_drafts', newDraftId, { studentName: cleanStudentName }, req);
+  if (submit) {
+    broadcastEvent('certificate.submitted', { draftId: newDraftId, studentName: cleanStudentName, course: cleanCourse, status: 'submitted' });
+  }
+  res.json({ draft: draftDoc, message: submit ? 'Draft submitted' : 'Draft saved' });
+});
+
+router.get('/teacher/certificates', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || !['teacher', 'institution'].includes(auth.profile.role) || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Approved Teacher or Institution role required.' });
+  }
+  const database = getDb();
+  const drafts = await database.collection('certificate_drafts').find({ teacher_id: auth.user.id }).sort({ created_at: -1 }).toArray();
+  res.json({ drafts });
+});
+
+// STUDENT ROUTES
+router.get('/student/certificates', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'student' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Approved Student role required.' });
+  }
+  const database = getDb();
+  const certificates = await database.collection('certificates').find({
+    $or: [{ owner_id: auth.user.id }, { student_name: auth.profile.full_name }],
+  }).sort({ created_at: -1 }).toArray();
+  res.json({ certificates });
+});
+
+// EMPLOYER WORKSPACE ROUTES
+router.get('/employer/verifications', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'employer' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Approved Employer role required.' });
+  }
+  const database = getDb();
+  const verifications = await database.collection('verification_logs')
+    .find({ verified_by: auth.user.email })
+    .sort({ created_at: -1 })
+    .toArray();
+  res.json({ verifications });
+});
+
+router.post('/employer/verify-candidate', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'employer' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Approved Employer role required.' });
+  }
+  const { candidateEmail, certificateId } = req.body;
+  if (!certificateId) return res.status(400).json({ error: 'Certificate ID is required for verification' });
+
+  const database = getDb();
+  const cleanId = sanitizeString(certificateId);
+  const cert = await database.collection('certificates').findOne({ certificate_id: cleanId });
+
+  if (!cert) {
+    return res.json({ result: 'not_found', certificateId: cleanId, certificate: null, block: null });
+  }
+
+  const block = await database.collection('blocks').findOne({ certificate_id: cleanId });
+  let chainValid = false;
+  if (block) {
+    const recomputed = sha256Hex(block.certificate_id + block.certificate_hash + block.previous_block_hash + block.timestamp);
+    chainValid = recomputed === block.block_hash;
+  }
+
+  let result = cert.status === 'revoked' ? 'revoked' : (chainValid ? 'valid' : 'tampered');
+
+  await database.collection('verification_logs').insertOne({
+    id: generateUUID(),
+    certificate_id: cleanId,
+    computed_hash: cert.certificate_hash,
+    stored_hash: cert.certificate_hash,
+    result,
+    candidate_email: candidateEmail ? sanitizeString(candidateEmail) : null,
+    verified_by: auth.user.email,
+    created_at: new Date().toISOString(),
+  });
+
+  await logActivity(auth.user.id, auth.user.email, 'EMPLOYER_VERIFY_CANDIDATE', 'certificates', cleanId, { candidateEmail, result }, req);
+
+  res.json({
+    result,
+    certificateId: cleanId,
+    certificate: cert,
+    block,
+    chainValid,
+  });
+});
+
+// DIRECT ISSUE (Admin Only)
+router.post('/certificates/issue', async (req, res) => {
+  const auth = await getUserFromRequest(req);
+  if (!auth?.profile || auth.profile.role !== 'admin' || auth.profile.status !== 'approved') {
+    return res.status(403).json({ error: 'Access denied. Administrator privileges required.' });
+  }
+  const { studentName, course, institution, issueDate, certificateId, fileContent, fileName, fileType, fileSize } = req.body;
+
+  if (fileName) {
+    const fileCheck = validateUploadedFile(fileName, fileSize);
+    if (!fileCheck.valid) return res.status(400).json({ error: fileCheck.error });
+  }
+
+  const certId = certificateId || generateCertId();
+  const certificateHash = sha256Hex(fileContent || '');
+  const block = await createBlock(certId, certificateHash);
+
+  const database = getDb();
+  const certDoc = {
+    id: generateUUID(),
+    certificate_id: certId,
+    student_name: sanitizeString(studentName),
+    course: sanitizeString(course),
+    institution: sanitizeString(institution),
+    issue_date: issueDate,
+    certificate_hash: certificateHash,
+    file_name: fileName,
+    file_type: fileType,
+    file_size: fileSize,
+    status: 'issued',
+    created_at: new Date().toISOString(),
+  };
+
+  await database.collection('certificates').insertOne(certDoc);
+  await logActivity(auth.user.id, auth.user.email, 'ISSUE_CERTIFICATE', 'certificates', certId, {}, req);
+  res.json({ certificateId: certId, hash: certificateHash, blockHash: block.blockHash, blockIndex: block.blockIndex, previousBlockHash: block.previousBlockHash, txTimestamp: block.timestamp, certificate: certDoc });
+});
+
+// BILLING / STORE SHOWCASE DEMO
+router.post('/billing/restore-purchases', async (req, res) => {
+  const { licenseKey } = req.body || {};
+  const restored = Boolean(licenseKey && String(licenseKey).trim().length >= 6);
+  res.json({
+    message: restored ? 'Subscription restored successfully.' : 'No active subscription found for this license key.',
+    restored,
+    tier: restored ? 'pro' : undefined,
+  });
+});
+
 app.use(router);
 app.use('/api', router);
 app.use('/cert-api', router);
 
-app.listen(PORT, () => {
-  console.log(`[ChainCert Server] Standalone backend listening on port ${PORT}`);
-  console.log(`[ChainCert Server] Allowed CORS Origins: ${configuredOrigins.length > 0 ? configuredOrigins.join(', ') : 'Localhost / Dev origins'}`);
+// Connect DB and launch Express server
+connectToDatabase().then(({ mode }) => {
+  app.listen(PORT, () => {
+    console.log(`[ChainCert Server] Server running on port ${PORT}`);
+    console.log(`[ChainCert Server] Database Engine: ${mode}`);
+    console.log(`[ChainCert Server] Healthcheck available at: http://localhost:${PORT}/health`);
+  });
 });

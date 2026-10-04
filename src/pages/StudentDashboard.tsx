@@ -18,7 +18,7 @@ import {
   Hash,
   Box,
 } from 'lucide-react';
-import { api, type Certificate, type BlockData } from '@/lib/supabase';
+import { api, type Certificate, type BlockData } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { formatDate, formatFileSize, copyToClipboard } from '@/lib/utils';
 import HashDisplay from '@/components/HashDisplay';
@@ -26,6 +26,7 @@ import StatusBadge from '@/components/StatusBadge';
 import { EmptyState } from '@/components/EmptyState';
 import { SkeletonCard } from '@/components/Skeleton';
 import { FullPageSpinner } from '@/components/Spinner';
+import { useRealtimeEvents } from '@/lib/events';
 
 export default function StudentDashboard() {
   const { user } = useAuth();
@@ -44,6 +45,19 @@ export default function StudentDashboard() {
       setLoading(false);
     }
   }, []);
+
+  const handleRealtimeEvent = useCallback((evt: any) => {
+    if (['certificate.approved', 'certificate.revoked', 'certificate.status.updated'].includes(evt.type)) {
+      if (evt.type === 'certificate.approved') {
+        toast.success('Real-Time Alert: A new certificate has been issued to your account!');
+      } else if (evt.type === 'certificate.revoked') {
+        toast.error('Real-Time Alert: A certificate status was updated to REVOKED.');
+      }
+      fetchCerts();
+    }
+  }, [fetchCerts]);
+
+  useRealtimeEvents(handleRealtimeEvent);
 
   useEffect(() => {
     fetchCerts();

@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '@/lib/auth';
-import type { UserRole } from '@/lib/supabase';
+import type { UserRole } from '@/lib/api';
 import { SystemMonitor } from './SystemMonitor';
 
 interface NavItem {
@@ -73,6 +73,12 @@ export default function Navbar() {
           { label: 'My Certificates', path: '/student/dashboard', icon: GraduationCap },
           { label: 'Verify', path: '/verify', icon: Search },
         ];
+      case 'employer':
+        return [
+          { label: 'Employer Portal', path: '/employer/dashboard', icon: GraduationCap },
+          { label: 'Verify', path: '/verify', icon: Search },
+          { label: 'Ledger', path: '/ledger', icon: Boxes },
+        ];
       default:
         return [
           { label: 'Verify', path: '/verify', icon: Search },
@@ -110,6 +116,8 @@ export default function Navbar() {
         return 'bg-blue-500/15 text-blue-400 border-blue-500/30';
       case 'student':
         return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30';
+      case 'employer':
+        return 'bg-purple-500/15 text-purple-400 border-purple-500/30';
       default:
         return 'bg-slate-500/15 text-slate-400 border-slate-500/30';
     }

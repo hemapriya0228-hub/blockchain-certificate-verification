@@ -16,7 +16,7 @@ import {
   Layers,
   ShieldAlert,
 } from 'lucide-react';
-import { api, type StatsResponse } from '@/lib/supabase';
+import { api, type StatsResponse } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { Spinner } from '@/components/Spinner';
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Activity, CheckCircle2, Server, Database, ShieldCheck, RefreshCw, Clock } from 'lucide-react';
-import { api } from '@/lib/supabase';
+import { api } from '@/lib/api';
 
 export default function StatusPage() {
   const [latency, setLatency] = useState<number | null>(null);

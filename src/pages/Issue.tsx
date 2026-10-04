@@ -18,7 +18,7 @@ import {
   Calendar,
   IdCard,
 } from 'lucide-react';
-import { api, type IssueResponse } from '@/lib/supabase';
+import { api, type IssueResponse } from '@/lib/api';
 import { fileToBase64, formatFileSize, generateUUID, validateCertificateFile } from '@/lib/utils';
 import { ButtonSpinner } from '@/components/Spinner';
 import HashDisplay from '@/components/HashDisplay';

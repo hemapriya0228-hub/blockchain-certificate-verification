@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
-import { api, type AppUser, type UserRole } from '@/lib/supabase';
+import { api, type AppUser, type UserRole } from '@/lib/api';
 
 interface AuthContextValue {
   user: AppUser | null;

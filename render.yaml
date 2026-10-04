@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: blockchain-certificate-verification-api
+    name: chaincert-backend-api
     runtime: node
     plan: free
     buildCommand: npm install
@@ -8,15 +8,14 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20.18.0
-      - key: SUPABASE_URL
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
         sync: false
-      - key: SUPABASE_ANON_KEY
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: SUPABASE_JWT_SECRET
-        sync: false
-      - key: FRONTEND_URL
+      - key: MONGODB_DATABASE
+        value: chaincert
+      - key: JWT_SECRET
         sync: false
       - key: ALLOWED_ORIGIN
         sync: false
+
