@@ -209,17 +209,25 @@ export async function connectToDatabase() {
       console.warn(`[ChainCert DB Warning] MONGODB_URI in production is missing or set to localhost.`);
     }
 
-    client = new MongoClient(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-    });
+    const isAtlas = MONGODB_URI.includes('mongodb+srv://') || MONGODB_URI.includes('.mongodb.net');
+    const clientOptions = {
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
+      family: 4,
+    };
+
+    if (isAtlas) {
+      clientOptions.tls = true;
+    }
+
+    client = new MongoClient(MONGODB_URI, clientOptions);
     await client.connect();
     db = client.db(DB_NAME);
+    await db.command({ ping: 1 });
     isConnected = true;
-    dbMode = MONGODB_URI.includes('mongodb+srv://') || MONGODB_URI.includes('.mongodb.net')
-      ? 'mongodb-atlas'
-      : 'mongodb';
+    dbMode = isAtlas ? 'mongodb-atlas' : 'mongodb';
 
-    console.log(`[ChainCert DB] Connected to database '${DB_NAME}' (${dbMode}).`);
+    console.log(`[ChainCert DB] Connected and pinged database '${DB_NAME}' (${dbMode}).`);
     await ensureIndexes(db);
     await seedDefaultUsers(db);
     return { db, mode: dbMode, connected: true };
