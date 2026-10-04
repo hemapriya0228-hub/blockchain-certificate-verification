@@ -270,7 +270,21 @@ router.get('/events', (req, res) => {
 
 // Healthcheck endpoint
 router.get(['/', '/health'], async (req, res) => {
-  const { mode, connected } = await connectToDatabase();
+  const { mode, connected, error } = await connectToDatabase();
+  const isProd = process.env.NODE_ENV === 'production';
+
+  if (!connected && isProd) {
+    return res.status(503).json({
+      status: 'error',
+      service: 'ChainCert Core API',
+      database: mode || 'disconnected',
+      connected: false,
+      error: error || 'Production MongoDB connection unavailable. MONGODB_URI configuration required.',
+      uptime: Math.floor(process.uptime()),
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   res.json({
     status: 'ok',
     service: 'ChainCert Core API',

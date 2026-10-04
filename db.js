@@ -202,9 +202,15 @@ const fallbackStore = new InMemoryStore();
 export async function connectToDatabase() {
   if (db && isConnected) return { db, mode: dbMode, connected: true };
 
+  const isProd = process.env.NODE_ENV === 'production';
+
   try {
+    if (isProd && (!process.env.MONGODB_URI || process.env.MONGODB_URI.includes('127.0.0.1') || process.env.MONGODB_URI.includes('localhost'))) {
+      console.warn(`[ChainCert DB Warning] MONGODB_URI in production is missing or set to localhost.`);
+    }
+
     client = new MongoClient(MONGODB_URI, {
-      serverSelectionTimeoutMS: 3000,
+      serverSelectionTimeoutMS: 5000,
     });
     await client.connect();
     db = client.db(DB_NAME);
@@ -218,11 +224,21 @@ export async function connectToDatabase() {
     await seedDefaultUsers(db);
     return { db, mode: dbMode, connected: true };
   } catch (err) {
-    if (process.env.NODE_ENV === 'production') {
-      console.warn(`[ChainCert DB] Production MongoDB connection failed (${err.message}). Falling back to in-memory DB.`);
-    }
-    console.warn(`[ChainCert DB] MongoDB Server connection note (${err.message}). Using local in-memory DB engine.`);
+    console.error(`[ChainCert DB FATAL] MongoDB connection failed (${err.message}).`);
     isConnected = false;
+
+    if (isProd) {
+      dbMode = 'disconnected';
+      db = null;
+      return {
+        db: null,
+        mode: 'disconnected',
+        connected: false,
+        error: err.message,
+      };
+    }
+
+    console.warn(`[ChainCert DB] Local development mode: Using in-memory DB engine fallback.`);
     dbMode = 'in-memory-mongodb';
     return {
       db: {
